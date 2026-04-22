@@ -2,13 +2,18 @@
 
 from datetime import datetime
 from typing import Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.models.transaction import TransactionStatus
-from app.schemas.transaction import TransactionListFilters, TransactionListResponse
+from app.schemas.transaction import (
+    TransactionDetailResponse,
+    TransactionListFilters,
+    TransactionListResponse,
+)
 from app.services import transaction_query
 from app.services.transaction_query import SORT_FIELDS
 
@@ -74,3 +79,28 @@ def list_transactions(
         offset=offset,
     )
     return transaction_query.list_transactions(db, filters)
+
+
+@router.get(
+    "/{transaction_id}",
+    response_model=TransactionDetailResponse,
+    summary="Get a single transaction's current state plus its full event history",
+    responses={404: {"description": "Transaction not found"}},
+)
+def get_transaction(
+    transaction_id: UUID,
+    db: Session = Depends(get_db),
+) -> TransactionDetailResponse:
+    """Return the materialized transaction + every event we've received for it.
+
+    FastAPI validates `transaction_id` as a UUID automatically — a malformed
+    value returns 422 before this handler runs. If the UUID is well-formed but
+    refers to a transaction we've never ingested, we return 404.
+    """
+    detail = transaction_query.get_transaction_detail(db, transaction_id)
+    if detail is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Transaction {transaction_id} not found",
+        )
+    return detail

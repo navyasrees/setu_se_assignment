@@ -5,12 +5,18 @@ aggregate over the raw events log at request time — that's what the ingestion
 service maintains the materialized state for.
 """
 
+from typing import Optional
+from uuid import UUID
+
 from sqlalchemy.orm import Session
 
+from app.models.event import Event
 from app.models.merchant import Merchant
 from app.models.transaction import Transaction
 from app.schemas.transaction import (
+    EventHistoryItem,
     Pagination,
+    TransactionDetailResponse,
     TransactionListFilters,
     TransactionListItem,
     TransactionListResponse,
@@ -100,4 +106,60 @@ def list_transactions(
         pagination=Pagination(
             total=total, limit=filters.limit, offset=filters.offset
         ),
+    )
+
+
+def get_transaction_detail(
+    db: Session, transaction_id: UUID
+) -> Optional[TransactionDetailResponse]:
+    """Return one transaction's current state plus its full event history.
+
+    Returns None if the transaction doesn't exist — the router translates that
+    into a 404. Keeping HTTP concerns out of the service means this function
+    stays usable from non-HTTP callers (scripts, tests, background jobs).
+
+    Two queries are issued:
+      1. transactions JOIN merchants, keyed by PK          (one row)
+      2. events WHERE transaction_id = :id ORDER BY time   (N rows)
+
+    Both are index-backed (txns PK; idx_events_transaction). Keeping them
+    separate is simpler than a single LEFT JOIN that would duplicate the
+    transaction row once per event and need manual de-duplication in Python.
+    """
+
+    row = (
+        db.query(Transaction, Merchant.name.label("merchant_name"))
+        .join(Merchant, Transaction.merchant_id == Merchant.merchant_id)
+        .filter(Transaction.transaction_id == transaction_id)
+        .one_or_none()
+    )
+    if row is None:
+        return None
+
+    txn, merchant_name = row
+
+    # Ordered oldest-first. Secondary sort on received_at gives deterministic
+    # ordering when two events share an event_timestamp — otherwise rows with
+    # identical timestamps could flip between requests.
+    events = (
+        db.query(Event)
+        .filter(Event.transaction_id == transaction_id)
+        .order_by(Event.event_timestamp.asc(), Event.received_at.asc())
+        .all()
+    )
+
+    return TransactionDetailResponse(
+        transaction=TransactionListItem(
+            transaction_id=txn.transaction_id,
+            merchant_id=txn.merchant_id,
+            merchant_name=merchant_name,
+            amount=txn.amount,
+            currency=txn.currency,
+            current_status=txn.current_status,
+            initiated_at=txn.initiated_at,
+            processed_at=txn.processed_at,
+            failed_at=txn.failed_at,
+            settled_at=txn.settled_at,
+        ),
+        events=[EventHistoryItem.model_validate(e) for e in events],
     )
