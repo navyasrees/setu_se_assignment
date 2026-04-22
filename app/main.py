@@ -12,6 +12,8 @@ from app.db.session import engine, get_db
 # which is what lets create_all() actually create them.
 import app.models  # noqa: F401
 
+from app.routers import events as events_router
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -21,6 +23,10 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
+
+# Mount routers. Each router handles one resource (events, transactions,
+# reconciliation). main.py stays a thin wiring diagram.
+app.include_router(events_router.router)
 
 
 @app.get("/")
