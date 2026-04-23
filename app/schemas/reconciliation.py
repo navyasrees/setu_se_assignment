@@ -1,12 +1,19 @@
 """Pydantic schemas for the /reconciliation endpoints."""
 
+import enum
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Dict, List, Optional
+from uuid import UUID
 
 from pydantic import BaseModel
 
 from app.models.transaction import TransactionStatus
+
+
+# ---------------------------------------------------------------------------
+#   /reconciliation/summary
+# ---------------------------------------------------------------------------
 
 
 class SummaryGroup(BaseModel):
@@ -53,3 +60,60 @@ class ReconciliationSummaryResponse(BaseModel):
     filters: SummaryFilters
     totals: SummaryTotals
     groups: List[SummaryGroup]
+
+
+# ---------------------------------------------------------------------------
+#   /reconciliation/discrepancies
+# ---------------------------------------------------------------------------
+
+
+class DiscrepancyType(str, enum.Enum):
+    """Types of discrepancies the detector flags.
+
+    Kept as a string enum (rather than free-form) so clients can switch on it
+    without fuzzy matching, and so OpenAPI docs enumerate the values.
+    """
+
+    CONFLICTING_EVENTS = "conflicting_events"
+    STUCK_IN_PROCESSED = "stuck_in_processed"
+    STUCK_IN_INITIATED = "stuck_in_initiated"
+
+
+class DiscrepancyItem(BaseModel):
+    """One flagged transaction. Shape mirrors TransactionListItem so clients
+    can reuse the same rendering component, with a discriminator on `type`."""
+
+    type: DiscrepancyType
+    transaction_id: UUID
+    merchant_id: str
+    merchant_name: str
+    amount: Decimal
+    currency: str
+    current_status: TransactionStatus
+
+    initiated_at: Optional[datetime] = None
+    processed_at: Optional[datetime] = None
+    failed_at: Optional[datetime] = None
+    settled_at: Optional[datetime] = None
+
+    # Human-readable explanation of *why* this row was flagged. The client can
+    # show this directly; no need for a translation table on their side.
+    detail: str
+
+
+class DiscrepancySummary(BaseModel):
+    total: int
+    by_type: Dict[DiscrepancyType, int]
+
+
+class DiscrepancyFilters(BaseModel):
+    merchant_id: Optional[str] = None
+    type: Optional[DiscrepancyType] = None
+    processed_stale_hours: int = 24
+    initiated_stale_hours: int = 1
+
+
+class ReconciliationDiscrepanciesResponse(BaseModel):
+    filters: DiscrepancyFilters
+    summary: DiscrepancySummary
+    discrepancies: List[DiscrepancyItem]
