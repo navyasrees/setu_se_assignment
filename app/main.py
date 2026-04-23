@@ -13,6 +13,7 @@ from app.db.session import engine, get_db
 import app.models  # noqa: F401
 
 from app.routers import events as events_router
+from app.routers import reconciliation as reconciliation_router
 from app.routers import transactions as transactions_router
 
 
@@ -29,6 +30,7 @@ app = FastAPI(title=settings.app_name, lifespan=lifespan)
 # reconciliation). main.py stays a thin wiring diagram.
 app.include_router(events_router.router)
 app.include_router(transactions_router.router)
+app.include_router(reconciliation_router.router)
 
 
 @app.get("/")
