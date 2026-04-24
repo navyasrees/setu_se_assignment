@@ -1,0 +1,630 @@
+{
+  "info": {
+    "name": "Setu SE Assignment",
+    "description": "Payment reconciliation service — 5 endpoints covering ingestion, transaction lookup, and reconciliation views.\n\nSet the `baseUrl` collection variable to either your deployed URL or `http://127.0.0.1:8000`. Every request uses `{{baseUrl}}` so you can switch environments without touching individual requests.\n\nSuggested run order (tells the full story):\n1. `Health → Health check`\n2. `Events → Ingest new event` (201 Created)\n3. `Events → Idempotency replay` (200 OK — same event_id, no duplication)\n4. `Events → Settled follow-up` (lifecycle → current_status flips to settled)\n5. `Events → Out-of-order initiated` (late event must NOT regress status)\n6. `Events → Discrepancy seed (failed)` + `(settled)` — sets up the discrepancy demo\n7. `Transactions → List all` / filters / sorts / pagination\n8. `Transactions → Detail` (shows event history for the txn above)\n9. `Reconciliation → Summary` — per merchant / date / combined\n10. `Reconciliation → Discrepancies` — conflicting_events surfaces the seeded pair",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8000",
+      "description": "Base URL. Override with your deployed URL (e.g. https://setu-se.onrender.com) for production testing."
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Root — sanity check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/",
+              "host": ["{{baseUrl}}"],
+              "path": [""]
+            }
+          }
+        },
+        {
+          "name": "Health — DB reachability",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Events — ingestion",
+      "description": "POST /events — idempotent event ingestion.\n\nFirst call returns 201 Created. Replaying the same event_id returns 200 OK with status=duplicate (no DB mutation). The service also enforces status precedence so late-arriving events never regress a transaction's current_status.",
+      "item": [
+        {
+          "name": "Ingest new event (201 Created)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.test('status=accepted', () => pm.expect(pm.response.json().status).to.eql('accepted'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"b768e3a7-9eb3-4603-b21c-a54cc95661bc\",\n  \"event_type\": \"payment_initiated\",\n  \"transaction_id\": \"2f86e94c-239c-4302-9874-75f28e3474ee\",\n  \"merchant_id\": \"merchant_2\",\n  \"merchant_name\": \"FreshBasket\",\n  \"amount\": 15248.29,\n  \"currency\": \"INR\",\n  \"timestamp\": \"2026-01-08T12:11:58.085567+00:00\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["events"]
+            },
+            "description": "First call for this event_id — server records the event and creates/updates the transaction."
+          }
+        },
+        {
+          "name": "Idempotency replay (200 OK, duplicate)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('status=duplicate', () => pm.expect(pm.response.json().status).to.eql('duplicate'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"b768e3a7-9eb3-4603-b21c-a54cc95661bc\",\n  \"event_type\": \"payment_initiated\",\n  \"transaction_id\": \"2f86e94c-239c-4302-9874-75f28e3474ee\",\n  \"merchant_id\": \"merchant_2\",\n  \"merchant_name\": \"FreshBasket\",\n  \"amount\": 15248.29,\n  \"currency\": \"INR\",\n  \"timestamp\": \"2026-01-08T12:11:58.085567+00:00\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["events"]
+            },
+            "description": "Identical event_id to the request above. Server returns 200 with status=duplicate — no double-count, no second DB write."
+          }
+        },
+        {
+          "name": "Settled follow-up (lifecycle progression)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"99999999-9999-9999-9999-999999999991\",\n  \"event_type\": \"settled\",\n  \"transaction_id\": \"2f86e94c-239c-4302-9874-75f28e3474ee\",\n  \"merchant_id\": \"merchant_2\",\n  \"merchant_name\": \"FreshBasket\",\n  \"amount\": 15248.29,\n  \"currency\": \"INR\",\n  \"timestamp\": \"2026-01-09T10:00:00+00:00\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["events"]
+            },
+            "description": "Second event on the same transaction — flips current_status to 'settled'."
+          }
+        },
+        {
+          "name": "Out-of-order initiated (no regression)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"99999999-9999-9999-9999-999999999992\",\n  \"event_type\": \"payment_initiated\",\n  \"transaction_id\": \"2f86e94c-239c-4302-9874-75f28e3474ee\",\n  \"merchant_id\": \"merchant_2\",\n  \"merchant_name\": \"FreshBasket\",\n  \"amount\": 15248.29,\n  \"currency\": \"INR\",\n  \"timestamp\": \"2026-01-07T00:00:00+00:00\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["events"]
+            },
+            "description": "Late-arriving 'initiated' event for an already-settled transaction. The event is recorded in the log for audit, but current_status stays 'settled' because the precedence rule (settled > initiated) prevents regression."
+          }
+        },
+        {
+          "name": "Discrepancy seed — payment_failed",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"99999999-9999-9999-9999-999999999993\",\n  \"event_type\": \"payment_failed\",\n  \"transaction_id\": \"2ea525e0-f152-485f-9f6b-e5c7ca54f1f0\",\n  \"merchant_id\": \"merchant_1\",\n  \"merchant_name\": \"QuickMart\",\n  \"amount\": 9169.41,\n  \"currency\": \"INR\",\n  \"timestamp\": \"2026-01-08T13:30:00+00:00\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["events"]
+            },
+            "description": "Half of the contradictory pair. Run together with the next request to seed /reconciliation/discrepancies."
+          }
+        },
+        {
+          "name": "Discrepancy seed — settled (contradicts)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"99999999-9999-9999-9999-999999999994\",\n  \"event_type\": \"settled\",\n  \"transaction_id\": \"2ea525e0-f152-485f-9f6b-e5c7ca54f1f0\",\n  \"merchant_id\": \"merchant_1\",\n  \"merchant_name\": \"QuickMart\",\n  \"amount\": 9169.41,\n  \"currency\": \"INR\",\n  \"timestamp\": \"2026-01-08T16:00:00+00:00\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["events"]
+            },
+            "description": "The 'settled' event that contradicts the 'payment_failed' above. After both are ingested, this transaction appears in /reconciliation/discrepancies under conflicting_events."
+          }
+        },
+        {
+          "name": "422 — negative amount",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"11111111-1111-1111-1111-111111111111\",\n  \"event_type\": \"payment_initiated\",\n  \"transaction_id\": \"22222222-2222-2222-2222-222222222222\",\n  \"merchant_id\": \"merchant_2\",\n  \"merchant_name\": \"FreshBasket\",\n  \"amount\": -100.00,\n  \"currency\": \"INR\",\n  \"timestamp\": \"2026-01-08T00:00:00+00:00\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["events"]
+            },
+            "description": "Validation rejects amounts <= 0 at the schema layer."
+          }
+        },
+        {
+          "name": "422 — unknown event_type",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"11111111-1111-1111-1111-111111111112\",\n  \"event_type\": \"NOT_A_REAL_TYPE\",\n  \"transaction_id\": \"22222222-2222-2222-2222-222222222222\",\n  \"merchant_id\": \"merchant_2\",\n  \"merchant_name\": \"FreshBasket\",\n  \"amount\": 100.00,\n  \"currency\": \"INR\",\n  \"timestamp\": \"2026-01-08T00:00:00+00:00\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["events"]
+            },
+            "description": "Validation rejects event_type values outside the allowed enum."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Transactions — list",
+      "description": "GET /transactions — filter, sort, paginate. Filters are AND-composed. Sort accepts initiated_at | amount | current_status | updated_at with optional '-' prefix for descending.",
+      "item": [
+        {
+          "name": "Default — newest initiated_at first",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions?limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions"],
+              "query": [{ "key": "limit", "value": "10" }]
+            }
+          }
+        },
+        {
+          "name": "Filter by merchant",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions?merchant_id=merchant_2&limit=5",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions"],
+              "query": [
+                { "key": "merchant_id", "value": "merchant_2" },
+                { "key": "limit", "value": "5" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Filter by status=settled",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions?status=settled&limit=5",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions"],
+              "query": [
+                { "key": "status", "value": "settled" },
+                { "key": "limit", "value": "5" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Filter by date range",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions?date_from=2026-01-08T00:00:00+00:00&date_to=2026-01-09T00:00:00+00:00&limit=5",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions"],
+              "query": [
+                { "key": "date_from", "value": "2026-01-08T00:00:00+00:00" },
+                { "key": "date_to", "value": "2026-01-09T00:00:00+00:00" },
+                { "key": "limit", "value": "5" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Combined — merchant + status + date range",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions?merchant_id=merchant_2&status=settled&date_from=2026-01-01T00:00:00+00:00&date_to=2026-02-01T00:00:00+00:00&limit=5",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions"],
+              "query": [
+                { "key": "merchant_id", "value": "merchant_2" },
+                { "key": "status", "value": "settled" },
+                { "key": "date_from", "value": "2026-01-01T00:00:00+00:00" },
+                { "key": "date_to", "value": "2026-02-01T00:00:00+00:00" },
+                { "key": "limit", "value": "5" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Sort — top 5 largest amounts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions?sort=-amount&limit=5",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions"],
+              "query": [
+                { "key": "sort", "value": "-amount" },
+                { "key": "limit", "value": "5" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Pagination — page 1",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions?limit=10&offset=0",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions"],
+              "query": [
+                { "key": "limit", "value": "10" },
+                { "key": "offset", "value": "0" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Pagination — page 2 (disjoint from page 1)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions?limit=10&offset=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions"],
+              "query": [
+                { "key": "limit", "value": "10" },
+                { "key": "offset", "value": "10" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "422 — unknown sort field",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions?sort=created_at",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions"],
+              "query": [{ "key": "sort", "value": "created_at" }]
+            },
+            "description": "Sort field is validated against a whitelist; invalid names return 422 with the allowed list in the error body."
+          }
+        },
+        {
+          "name": "422 — limit > 200",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions?limit=500",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions"],
+              "query": [{ "key": "limit", "value": "500" }]
+            }
+          }
+        },
+        {
+          "name": "422 — date_from > date_to",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions?date_from=2026-06-01T00:00:00+00:00&date_to=2026-01-01T00:00:00+00:00",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions"],
+              "query": [
+                { "key": "date_from", "value": "2026-06-01T00:00:00+00:00" },
+                { "key": "date_to", "value": "2026-01-01T00:00:00+00:00" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Transactions — detail",
+      "description": "GET /transactions/{id} — current state plus every event ever received for that transaction, oldest-first.",
+      "item": [
+        {
+          "name": "Detail with event history",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions/2f86e94c-239c-4302-9874-75f28e3474ee",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions", "2f86e94c-239c-4302-9874-75f28e3474ee"]
+            },
+            "description": "Shows the materialized transaction + multiple events (initiated, settled, and the late-arriving initiated). Proof that the out-of-order event was recorded but didn't regress current_status."
+          }
+        },
+        {
+          "name": "Detail for the discrepancy-seeded transaction",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions/2ea525e0-f152-485f-9f6b-e5c7ca54f1f0",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions", "2ea525e0-f152-485f-9f6b-e5c7ca54f1f0"]
+            },
+            "description": "The event log shows both payment_failed and settled — exactly what /reconciliation/discrepancies surfaces."
+          }
+        },
+        {
+          "name": "404 — unknown transaction",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions/00000000-0000-0000-0000-000000000000",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions", "00000000-0000-0000-0000-000000000000"]
+            }
+          }
+        },
+        {
+          "name": "422 — malformed UUID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions/not-a-uuid",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions", "not-a-uuid"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reconciliation — summary",
+      "description": "GET /reconciliation/summary — filter-wide totals + per (merchant × UTC date × status) groups. No pagination — bounded by merchants × days × 4 statuses.",
+      "item": [
+        {
+          "name": "All — grouped by merchant × date × status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/reconciliation/summary",
+              "host": ["{{baseUrl}}"],
+              "path": ["reconciliation", "summary"]
+            }
+          }
+        },
+        {
+          "name": "Per merchant",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/reconciliation/summary?merchant_id=merchant_2",
+              "host": ["{{baseUrl}}"],
+              "path": ["reconciliation", "summary"],
+              "query": [{ "key": "merchant_id", "value": "merchant_2" }]
+            }
+          }
+        },
+        {
+          "name": "Per date window",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/reconciliation/summary?date_from=2026-01-08T00:00:00+00:00&date_to=2026-01-09T00:00:00+00:00",
+              "host": ["{{baseUrl}}"],
+              "path": ["reconciliation", "summary"],
+              "query": [
+                { "key": "date_from", "value": "2026-01-08T00:00:00+00:00" },
+                { "key": "date_to", "value": "2026-01-09T00:00:00+00:00" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Merchant + status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/reconciliation/summary?merchant_id=merchant_1&status=settled",
+              "host": ["{{baseUrl}}"],
+              "path": ["reconciliation", "summary"],
+              "query": [
+                { "key": "merchant_id", "value": "merchant_1" },
+                { "key": "status", "value": "settled" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Combined — merchant + status + date range",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/reconciliation/summary?merchant_id=merchant_2&status=settled&date_from=2026-01-01T00:00:00+00:00&date_to=2026-02-01T00:00:00+00:00",
+              "host": ["{{baseUrl}}"],
+              "path": ["reconciliation", "summary"],
+              "query": [
+                { "key": "merchant_id", "value": "merchant_2" },
+                { "key": "status", "value": "settled" },
+                { "key": "date_from", "value": "2026-01-01T00:00:00+00:00" },
+                { "key": "date_to", "value": "2026-02-01T00:00:00+00:00" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "422 — date_from > date_to",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/reconciliation/summary?date_from=2026-06-01T00:00:00+00:00&date_to=2026-01-01T00:00:00+00:00",
+              "host": ["{{baseUrl}}"],
+              "path": ["reconciliation", "summary"],
+              "query": [
+                { "key": "date_from", "value": "2026-06-01T00:00:00+00:00" },
+                { "key": "date_to", "value": "2026-01-01T00:00:00+00:00" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reconciliation — discrepancies",
+      "description": "GET /reconciliation/discrepancies — surfaces transactions in nonsensical or stuck states.\n\nDetectors:\n- conflicting_events — same txn has both payment_failed and settled events (the seeded pair above lands here)\n- stuck_in_processed — current_status='processed', processed_at older than threshold\n- stuck_in_initiated — current_status='initiated', initiated_at older than threshold",
+      "item": [
+        {
+          "name": "All — every detector runs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/reconciliation/discrepancies",
+              "host": ["{{baseUrl}}"],
+              "path": ["reconciliation", "discrepancies"]
+            }
+          }
+        },
+        {
+          "name": "Only conflicting_events (money shot)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/reconciliation/discrepancies?type=conflicting_events",
+              "host": ["{{baseUrl}}"],
+              "path": ["reconciliation", "discrepancies"],
+              "query": [{ "key": "type", "value": "conflicting_events" }]
+            },
+            "description": "Returns the 2ea525e0-... transaction seeded earlier — the one with both a failed and a settled event."
+          }
+        },
+        {
+          "name": "Only stuck_in_processed",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/reconciliation/discrepancies?type=stuck_in_processed",
+              "host": ["{{baseUrl}}"],
+              "path": ["reconciliation", "discrepancies"],
+              "query": [{ "key": "type", "value": "stuck_in_processed" }]
+            }
+          }
+        },
+        {
+          "name": "Per merchant",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/reconciliation/discrepancies?merchant_id=merchant_1",
+              "host": ["{{baseUrl}}"],
+              "path": ["reconciliation", "discrepancies"],
+              "query": [{ "key": "merchant_id", "value": "merchant_1" }]
+            }
+          }
+        },
+        {
+          "name": "Custom thresholds — 1 week stale window",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/reconciliation/discrepancies?initiated_stale_hours=168&processed_stale_hours=168",
+              "host": ["{{baseUrl}}"],
+              "path": ["reconciliation", "discrepancies"],
+              "query": [
+                { "key": "initiated_stale_hours", "value": "168" },
+                { "key": "processed_stale_hours", "value": "168" }
+              ]
+            },
+            "description": "Widen both thresholds to 7 days (168h). Useful when most sample data is old."
+          }
+        },
+        {
+          "name": "422 — unknown discrepancy type",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/reconciliation/discrepancies?type=NOT_A_REAL_TYPE",
+              "host": ["{{baseUrl}}"],
+              "path": ["reconciliation", "discrepancies"],
+              "query": [{ "key": "type", "value": "NOT_A_REAL_TYPE" }]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
